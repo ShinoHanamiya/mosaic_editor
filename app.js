@@ -1,13 +1,14 @@
 'use strict';
 (() => {
-  const VERSION = 'v1.0.1';
+  const VERSION = 'v1.0.2';
   const $ = id => document.getElementById(id);
   document.title = `画像モザイク工房 ${VERSION}`;
   $('version').textContent = VERSION;
-  const canvas = $('canvas'), ctx = canvas.getContext('2d');
+  const canvas = $('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
   const overlay = $('overlay'), oc = overlay.getContext('2d');
   const original = document.createElement('canvas');
   let loaded = false, busy = false, fileName = '', commands = [], position = 0, active = null, pixels = null, pointerId = null;
+  let raster = null, frame = 0, cursorPoint = null, previewBox = null;
   const status = message => { $('status').textContent = message; };
   function sync() {
     $('undo').disabled = !loaded || busy || position === 0;
@@ -40,7 +41,8 @@
     return sc.getImageData(0, 0, small.width, small.height);
   }
   function paint(op, x, y, w, h, circle = false) {
-    MosaicRaster.paint(ctx, canvas.width, canvas.height, op, pixels, x, y, w, h, circle);
+    if (!raster) raster = MosaicRaster.createSession(ctx, canvas.width, canvas.height, op, pixels);
+    raster.paint(x, y, w, h, circle);
   }
 
   function dab(op, p) {
@@ -58,9 +60,10 @@
   function redraw() {
     ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(original,0,0);
     for (let i=0;i<position;i++) {
-      const op=commands[i]; pixels=makePixels(op);
+      const op=commands[i]; pixels=makePixels(op);raster=null;
       if (op.tool==='rect') rectangle(op);
       else {dab(op,op.points[0]); for(let j=1;j<op.points.length;j++) segment(op,op.points[j-1],op.points[j]);}
+      if(raster)raster.flush();raster=null;
     }
     pixels=null; sync();
   }
@@ -89,43 +92,63 @@
     const r=overlay.getBoundingClientRect();
     return {x:Math.max(0,Math.min(canvas.width,(event.clientX-r.left)*canvas.width/r.width)), y:Math.max(0,Math.min(canvas.height,(event.clientY-r.top)*canvas.height/r.height))};
   }
+  function clearPreview() {
+    if(previewBox)oc.clearRect(...previewBox);
+    previewBox=null;
+  }
   function preview(p) {
-    oc.clearRect(0,0,overlay.width,overlay.height);
+    clearPreview();
     const op=active||settings(); const scale=canvas.width/overlay.getBoundingClientRect().width;
     oc.lineWidth=scale;oc.strokeStyle='#ffffff';oc.setLineDash([5*scale,4*scale]);oc.beginPath();
     if (active && op.tool==='rect') {const a=op.points[0];oc.rect(a.x,a.y,p.x-a.x,p.y-a.y);}
     else if(op.tool==='brush') {if(op.shape==='circle')oc.arc(p.x,p.y,op.size/2,0,Math.PI*2);else oc.rect(p.x-op.size/2,p.y-op.size/2,op.size,op.size);}
     oc.stroke();oc.strokeStyle='#302138';oc.lineDashOffset=5*scale;oc.stroke();
+    const margin=3*scale;
+    if(active&&op.tool==='rect'){
+      const a=op.points[0];previewBox=[Math.min(a.x,p.x)-margin,Math.min(a.y,p.y)-margin,Math.abs(p.x-a.x)+2*margin,Math.abs(p.y-a.y)+2*margin];
+    }else previewBox=[p.x-op.size/2-margin,p.y-op.size/2-margin,op.size+2*margin,op.size+2*margin];
   }
+  let drawnPoints=0;
+  function flushFrame() {
+    if(frame){cancelAnimationFrame(frame);frame=0;}
+    if(active&&active.tool==='brush'){
+      if(drawnPoints===0&&active.points.length){dab(active,active.points[0]);drawnPoints=1;}
+      while(drawnPoints<active.points.length){segment(active,active.points[drawnPoints-1],active.points[drawnPoints]);drawnPoints++;}
+    }
+    if(raster)raster.flush();
+    if(cursorPoint)preview(cursorPoint);
+  }
+  function schedule(p){cursorPoint=p;if(!frame)frame=requestAnimationFrame(flushFrame);}
   overlay.addEventListener('pointerdown',e=>{
     if(!loaded||busy||active||e.button!==0)return;
     if(position>=500){status('操作は500回までです。保存してから画像を開き直してください。');return;}
     e.preventDefault();pointerId=e.pointerId;overlay.setPointerCapture(pointerId);
-    active=settings();active.points.push(point(e));pixels=makePixels(active);
-    if(active.tool==='brush')dab(active,active.points[0]);preview(point(e));
+    active=settings();active.points.push(point(e));pixels=makePixels(active);raster=null;drawnPoints=0;
+    schedule(point(e));
   });
   overlay.addEventListener('pointermove',e=>{
     if(!loaded||busy)return;
     if(active && e.pointerId!==pointerId)return;
     const p=point(e);
     if(active){
-      if(active.tool==='brush') {const last=active.points[active.points.length-1];if(Math.hypot(p.x-last.x,p.y-last.y)>=Math.max(1,active.size/8)){segment(active,last,p);active.points.push(p);}}
+      if(active.tool==='brush') {const last=active.points[active.points.length-1];if(Math.hypot(p.x-last.x,p.y-last.y)>=Math.max(1,active.size/8)){active.points.push(p);}}
       else active.points[1]=p;
     }
-    preview(p);
+    schedule(p);
   });
   function finish(commit) {
     if(!active)return;
-    if(commit){if(active.tool==='rect')rectangle(active);commands=commands.slice(0,position);commands.push(active);position++;}
-    active=null;pixels=null;
+    if(commit){flushFrame();if(active.tool==='rect'){rectangle(active);if(raster)raster.flush();}commands=commands.slice(0,position);commands.push(active);position++;}
+    if(frame){cancelAnimationFrame(frame);frame=0;}
+    active=null;pixels=null;raster=null;cursorPoint=null;
     if(pointerId!==null&&overlay.hasPointerCapture(pointerId))overlay.releasePointerCapture(pointerId);
-    pointerId=null;oc.clearRect(0,0,overlay.width,overlay.height);
+    pointerId=null;clearPreview();
     if(!commit)redraw();sync();
   }
-  overlay.addEventListener('pointerup',e=>{if(active&&e.pointerId===pointerId){const p=point(e);if(active.tool==='brush'){segment(active,active.points.at(-1),p);active.points.push(p);}else active.points[1]=p;finish(true);}});
+  overlay.addEventListener('pointerup',e=>{if(active&&e.pointerId===pointerId){const p=point(e);if(active.tool==='brush'){active.points.push(p);}else active.points[1]=p;finish(true);}});
   overlay.addEventListener('pointercancel',()=>finish(false));
   overlay.addEventListener('lostpointercapture',()=>{if(active)finish(false);});
-  overlay.addEventListener('pointerleave',()=>{if(!active)oc.clearRect(0,0,overlay.width,overlay.height);});
+  overlay.addEventListener('pointerleave',()=>{if(!active){cursorPoint=null;clearPreview();}});
   function undo(){if(active)finish(false);if(position&&!busy){position--;redraw();status('ひとつ前の状態に戻しました。');}}
   function redo(){if(active)finish(false);if(position<commands.length&&!busy){position++;redraw();status('操作をやり直しました。');}}
   $('undo').onclick=undo;$('redo').onclick=redo;

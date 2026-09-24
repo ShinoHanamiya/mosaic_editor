@@ -1,44 +1,66 @@
 'use strict';
-// Integer pixel replacement deliberately avoids antialiased Canvas clipping.
-// Keeping this operation pure with respect to its supplied mosaic makes repeated
-// dabs in one stroke idempotent, even at partially transparent source pixels.
 (function (root) {
-  function paint(ctx, width, height, op, mosaic, x, y, w, h, circle = false) {
-    const left = circle ? x - w / 2 : x;
-    const top = circle ? y - h / 2 : y;
-    const x0 = Math.max(0, Math.floor(left));
-    const y0 = Math.max(0, Math.floor(top));
-    const x1 = Math.min(width, Math.ceil(left + w));
-    const y1 = Math.min(height, Math.ceil(top + h));
-    const rgba = op.effect === 'fill'
-      ? [parseInt(op.color.slice(1, 3), 16), parseInt(op.color.slice(3, 5), 16), parseInt(op.color.slice(5, 7), 16), 255] : null;
-    // Bound temporary allocations even for full-image rectangular selections.
-    for (let ty = y0; ty < y1; ty += 256) {
-      for (let tx = x0; tx < x1; tx += 256) {
-        const tw = Math.min(256, x1 - tx), th = Math.min(256, y1 - ty);
-        const patch = ctx.getImageData(tx, ty, tw, th);
-        for (let py = 0; py < th; py++) {
-          const gy = ty + py;
-          for (let px = 0; px < tw; px++) {
-            const gx = tx + px;
-            if (circle) {
-              if ((gx + 0.5 - x) ** 2 + (gy + 0.5 - y) ** 2 > (w / 2) ** 2) continue;
-            } else if (gx + 0.5 < left || gx + 0.5 >= left + w || gy + 0.5 < top || gy + 0.5 >= top + h) continue;
-            const out = (py * tw + px) * 4;
-            if (rgba) {
-              for (let c = 0; c < 4; c++) patch.data[out + c] = rgba[c];
-            } else {
-              const sx = Math.min(mosaic.width - 1, Math.floor((gx + 0.5) * mosaic.width / width));
-              const sy = Math.min(mosaic.height - 1, Math.floor((gy + 0.5) * mosaic.height / height));
-              const src = (sy * mosaic.width + sx) * 4;
-              for (let c = 0; c < 4; c++) patch.data[out + c] = mosaic.data[src + c];
-            }
-          }
-        }
-        ctx.putImageData(patch, tx, ty);
+  // Cache only touched tiles for one stroke. Canvas readback happens once per
+  // tile; row spans use packed RGBA writes and are uploaded once per frame.
+  function createSession(ctx, width, height, op, mosaic) {
+    const tiles = new Map(), dirty = new Set(), tileSize = 256;
+    const fillBytes = new Uint8ClampedArray(4);
+    let source, xMap, yMap;
+    if (op.effect === 'fill') {
+      for (let c = 0; c < 3; c++) fillBytes[c] = parseInt(op.color.slice(1+c*2,3+c*2),16);
+      fillBytes[3] = 255;
+    } else {
+      source = new Uint32Array(mosaic.data.buffer, mosaic.data.byteOffset, mosaic.data.length/4);
+      xMap = new Uint32Array(width); yMap = new Uint32Array(height);
+      for(let x=0;x<width;x++) xMap[x]=Math.min(mosaic.width-1,Math.floor((x+.5)*mosaic.width/width));
+      for(let y=0;y<height;y++) yMap[y]=Math.min(mosaic.height-1,Math.floor((y+.5)*mosaic.height/height))*mosaic.width;
+    }
+    const fill = new Uint32Array(fillBytes.buffer)[0];
+    function tileAt(x,y) {
+      const tx=Math.floor(x/tileSize)*tileSize, ty=Math.floor(y/tileSize)*tileSize;
+      const key=ty*width+tx;
+      let tile=tiles.get(key);
+      if(!tile){
+        const image=ctx.getImageData(tx,ty,Math.min(tileSize,width-tx),Math.min(tileSize,height-ty));
+        tile={x:tx,y:ty,image,values:new Uint32Array(image.data.buffer,image.data.byteOffset,image.data.length/4)};
+        tiles.set(key,tile);
+      }
+      return tile;
+    }
+    function span(y,start,end) {
+      start=Math.max(0,start);end=Math.min(width,end);
+      for(let x=start;x<end;){
+        const t=tileAt(x,y), right=Math.min(end,t.x+t.image.width);
+        const offset=(y-t.y)*t.image.width+x-t.x;
+        if(op.effect==='fill')t.values.fill(fill,offset,offset+right-x);
+        else for(let gx=x,i=offset;gx<right;gx++,i++)t.values[i]=source[yMap[y]+xMap[gx]];
+        dirty.add(t);x=right;
       }
     }
+    function paint(x,y,w,h,circle=false) {
+      const top=circle?y-h/2:y, bottom=top+h;
+      const y0=Math.max(0,Math.ceil(top-.5)),y1=Math.min(height,circle?Math.floor(bottom-.5)+1:Math.ceil(bottom-.5));
+      for(let gy=y0;gy<y1;gy++){
+        if(circle){
+          const square=(w/2)**2-(gy+.5-y)**2;
+          if(square<0)continue;
+          const half=Math.sqrt(square);
+          let left=Math.max(0,Math.ceil(x-half-.5)), right=Math.min(width,Math.floor(x+half-.5)+1);
+          // Keep the original inclusive circle predicate at floating-point edges.
+          while(left<right&&(left+.5-x)**2+(gy+.5-y)**2>(w/2)**2)left++;
+          while(right>left&&(right-.5-x)**2+(gy+.5-y)**2>(w/2)**2)right--;
+          span(gy,left,right);
+        }else span(gy,Math.ceil(x-.5),Math.ceil(x+w-.5));
+      }
+    }
+    function flush(){for(const t of dirty)ctx.putImageData(t.image,t.x,t.y);dirty.clear();}
+    return {paint,flush};
   }
-  if (typeof module === 'object' && module.exports) module.exports = { paint };
-  else root.MosaicRaster = { paint };
-})(typeof globalThis !== 'undefined' ? globalThis : this);
+  function paint(ctx,width,height,op,mosaic,x,y,w,h,circle=false){
+    const session=createSession(ctx,width,height,op,mosaic);
+    session.paint(x,y,w,h,circle);session.flush();
+  }
+  const api={paint,createSession};
+  if(typeof module==='object'&&module.exports)module.exports=api;
+  else root.MosaicRaster=api;
+})(typeof globalThis!=='undefined'?globalThis:this);
