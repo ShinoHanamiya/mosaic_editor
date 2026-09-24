@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const VERSION = 'v1.0.2';
+  const VERSION = 'v1.1';
   const $ = id => document.getElementById(id);
   document.title = `画像モザイク工房 ${VERSION}`;
   $('version').textContent = VERSION;
@@ -161,20 +161,27 @@
   $('tool').onchange=()=>{$('brushOptions').hidden=$('tool').value!=='brush';};
   for(const id of ['size','pixel'])$(id).oninput=()=>$(id+'Value').textContent=`${$(id).value} px`;
   $('zoom').onchange=layout;window.addEventListener('resize',layout);
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'){finish(false);return;}if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();redo();}});
-  $('save').onclick=async()=>{
-    if(!loaded||busy)return;finish(true);busy=true;sync();status('保存用の画像を作成しています…');
+  document.addEventListener('keydown',e=>{if($('photoDialog').open)return;if(e.key==='Escape'){finish(false);return;}if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();}else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();redo();}});
+  async function prepareFile() {
+    if(!loaded||busy)throw new Error('busy');
+    finish(true);busy=true;sync();
     try {
       const format=$('format').value;let source=canvas;
       if(format==='jpeg'){source=document.createElement('canvas');source.width=canvas.width;source.height=canvas.height;const sc=source.getContext('2d');sc.fillStyle='#fff';sc.fillRect(0,0,source.width,source.height);sc.drawImage(canvas,0,0);}
       const blob=await new Promise(resolve=>source.toBlob(resolve,`image/${format}`,0.95));
       if(!blob)throw new Error('encode');
       const stem=fileName.replace(/\.[^.]+$/,'').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,80)||'image';
-      const name=`${stem}_edited.${format==='jpeg'?'jpg':'png'}`;
-      const link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
-      status(`「${name}」のダウンロードを開始しました。保存先はブラウザのダウンロード設定をご確認ください。`);
+      return new File([blob],`${stem}_edited.${format==='jpeg'?'jpg':'png'}`,{type:blob.type});
+    }finally{busy=false;sync();}
+  }
+  $('save').onclick=async()=>{
+    if(!loaded||busy)return;status('保存用の画像を作成しています…');
+    try{
+      const file=await prepareFile();
+      const link=document.createElement('a'),url=URL.createObjectURL(file);link.href=url;link.download=file.name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+      status(`「${file.name}」のダウンロードを開始しました。保存先はブラウザのダウンロード設定をご確認ください。`);
     }catch{status('画像を保存できませんでした。メモリを空けてから再度お試しください。');}
-    finally{busy=false;sync();}
   };
+  PhotoExport.mount({document,navigator,URL,prepare:prepareFile,report:status});
   window.addEventListener('beforeunload',e=>{if(position){e.preventDefault();e.returnValue='';}});
 })();
