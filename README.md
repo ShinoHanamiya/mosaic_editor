@@ -1,4 +1,4 @@
-# 画像モザイク工房 v1
+# 画像モザイク工房 v1.0.1
 
 画像をブラウザ内で編集する、日本語の静的Webアプリです。PNG / JPEG / WebPを読み込み、モザイクや不透明な塗りつぶしを適用できます。外部ライブラリ、CDN、画像アップロード、解析通信はありません。
 
@@ -37,6 +37,7 @@ https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a
 
 ## ファイル
 - index.html: 編集画面
+- raster.js: 境界に半透明のふちを作らないピクセル置換処理
 - app.js: 画像処理・操作（VERSION定数でアプリのバージョンを管理）
 - style.css: レイアウト
 - manual.html: 日本語マニュアル（画面から開けます）
@@ -45,5 +46,9 @@ https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a
 
 今回はWebアプリ指定のためPython、requirements.txt、exeビルドは不要です。PowerShellのExecutionPolicy変更も不要です。
 
+## v1からの更新
+GitHubのファイル一式を今回の中身に置き換えてください。新しい`raster.js`も必ず追加します。画面が古いままならCtrl+F5で再読み込みし、v1.0.1表示を確認してください。修正前に保存した画像の線は自動では消えないため、元画像から加工し直してください。
+
 ## 変更履歴
+- v1.0.1: 重ね塗りで円弧状の細いふちが残る不具合を修正。アンチエイリアス付きクリップでの消去・描画から、選択ピクセルのRGBA値の直接置換へ変更。境界は1ピクセル単位となり、高倍率では段差が見えます。
 - v1: 初版。モザイク・塗りつぶし、丸／四角ブラシ、範囲指定、拡大表示、取り消し・やり直し、PNG／JPEG保存、ローカル起動・GitHub Pages対応。

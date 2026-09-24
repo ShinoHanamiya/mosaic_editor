@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const VERSION = 'v1';
+  const VERSION = 'v1.0.1';
   const $ = id => document.getElementById(id);
   document.title = `画像モザイク工房 ${VERSION}`;
   $('version').textContent = VERSION;
@@ -37,20 +37,12 @@
     sc.imageSmoothingEnabled = true;
     sc.imageSmoothingQuality = 'high';
     sc.drawImage(canvas, 0, 0, small.width, small.height);
-    return small;
+    return sc.getImageData(0, 0, small.width, small.height);
   }
   function paint(op, x, y, w, h, circle = false) {
-    ctx.save(); ctx.beginPath();
-    if (circle) ctx.arc(x, y, w / 2, 0, Math.PI * 2);
-    else ctx.rect(x, y, w, h);
-    ctx.clip();
-    // Replace the selected pixels, including transparent pixels, to avoid blending
-    // hidden original detail back into the mosaic.
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (op.effect === 'fill') { ctx.fillStyle = op.color; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-    else { ctx.imageSmoothingEnabled = false; ctx.drawImage(pixels, 0, 0, canvas.width, canvas.height); }
-    ctx.restore();
+    MosaicRaster.paint(ctx, canvas.width, canvas.height, op, pixels, x, y, w, h, circle);
   }
+
   function dab(op, p) {
     if (op.shape === 'circle') paint(op, p.x, p.y, op.size, op.size, true);
     else paint(op, p.x - op.size / 2, p.y - op.size / 2, op.size, op.size);
